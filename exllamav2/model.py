@@ -922,12 +922,6 @@ class ExLlamaV2:
         past_len = 0
         if cache is not None:
             past_len = cache.current_seq_len
-        
-        if seq_len == 1:
-            if hasattr(self, "decode_cnt"):
-                self.decode_cnt += 1
-            else:
-                self.decode_cnt = 1
 
         assert self.config.max_output_len is None or \
             preprocess_only or \
@@ -968,7 +962,7 @@ class ExLlamaV2:
         else:
             x = hidden_states
 
-        if use_cuda_graph and seq_len == 1 and self.decode_cnt > 0:
+        if use_cuda_graph and seq_len == 1:
             #print("using cuda graph")
             if self.cuda_graph_runner is None:
                 self.cuda_graph_runner = CUDAGraphRunner()
@@ -995,8 +989,6 @@ class ExLlamaV2:
 
         else:
             
-            if seq_len == 1 and self.decode_cnt > 0:
-                self.modules = self.modules#[:21]
             for idx, module in enumerate(self.modules[1:]):
 
                 if idx == self.head_layer_idx and last_id_only:
@@ -1014,21 +1006,12 @@ class ExLlamaV2:
 
                 # Onward
 
-                #torch.cuda.synchronize("cuda:0")
-                #torch.cuda.synchronize("cuda:1")
-                #print(x)
-
                 n_device = module.device_idx
                 if n_device is not None and n_device != device and n_device >= 0:
                     x = safe_move_tensor(x, n_device, non_blocking = True)
                     device = n_device
                     context = self.get_device_context(device)
                     torch.cuda.set_stream(context.stream)
-
-                #torch.cuda.synchronize("cuda:0")
-                #torch.cuda.synchronize("cuda:1")
-
-                #print(x)
 
                 x = module.forward(x, past_len_tensor = past_len_tensor, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
 
@@ -1072,9 +1055,4 @@ class ExLlamaV2:
                 x[:, :, -head_padding:] = -65504.
             r["logits"] = x
 
-        torch.cuda.synchronize("cuda:0")
-        torch.cuda.synchronize("cuda:1")
-        #print("logit", x)
-        #if x is not None:
-        #    x.resize_(1,-1)
         return r

@@ -69,8 +69,8 @@ def safe_move_tensor(tensor: torch.Tensor | tuple[torch.Tensor],
 
     if tensor.device.type == "cpu" or device.type == "cpu":
         #print("non_blocking=", non_blocking)
-        if non_blocking:
-            assert tensor.is_pinned()
+        #if non_blocking:
+        #    assert tensor.is_pinned()
         return tensor.to(device, non_blocking = non_blocking)
 
     # Source and dest are distinct CUDA devices
