@@ -2,6 +2,7 @@ from __future__ import annotations
 import os, sys
 
 from exllamav2.architecture import RopeStyle
+from exllamav2.cuda_graph_runner import CUDAGraphRunner
 
 min_version = (3, 8)
 if sys.version_info < min_version:
@@ -149,6 +150,7 @@ class ExLlamaV2:
                 break
 
         self.last_kv_layer_idx = layer_idx
+        self.cuda_graph_runner = None
 
 
     def set_device_map(self,
@@ -787,7 +789,6 @@ class ExLlamaV2:
             Tensor of embeddings, shape (batch_size, q_len, hidden_size), indexed by input token IDs >=
             ExLlamaV2.EMBEDDING_INDEX
         """
-
         bsz, q_len = input_ids.shape
         remaining_q_len = q_len
 
@@ -800,7 +801,6 @@ class ExLlamaV2:
         # is less than config.max_input_len
 
         if cache is None or not isinstance(cache, ExLlamaV2CacheBase):
-
             assert q_len <= effective_max_input_len, "Maximum input length exceeded in model.forward"
 
             result = self.forward_chunk(input_ids = input_ids,
@@ -809,7 +809,6 @@ class ExLlamaV2:
                                         preprocess_only = preprocess_only,
                                         last_id_only = last_id_only,
                                         loras = loras,
-                                        return_last_state = return_last_state,
                                         position_offsets = position_offsets,
                                         abort_event = abort_event,
                                         **kwargs)
@@ -898,7 +897,8 @@ class ExLlamaV2:
     @torch.inference_mode()
     # @profile
     def forward_chunk(self,
-                      input_ids: torch.Tensor,
+                      input_ids: torch.Tensor | None = None,
+                      hidden_states: torch.Tensor | None = None,
                       cache: ExLlamaV2CacheBase | None = None,
                       input_mask: torch.Tensor | None = None,
                       preprocess_only: bool = False,
@@ -909,13 +909,25 @@ class ExLlamaV2:
                       abort_event: threading.Event | None = None,
                       attn_params: ExLlamaV2Attention.Params | None = None,
                       extract_state_indices: list[int] | None = None,
+                      use_cuda_graph = False,
+                      is_capturing = False,
                       **kwargs) \
         -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-
-        batch_size, seq_len = input_ids.shape
+        if input_ids is not None:
+            batch_size, seq_len = input_ids.shape
+        elif hidden_states is not None:
+            batch_size, seq_len = hidden_states.shape[:2]
+        else:
+            assert False, "input_ids or hidden_states must not None"
         past_len = 0
         if cache is not None:
             past_len = cache.current_seq_len
+        
+        if seq_len == 1:
+            if hasattr(self, "decode_cnt"):
+                self.decode_cnt += 1
+            else:
+                self.decode_cnt = 1
 
         assert self.config.max_output_len is None or \
             preprocess_only or \
@@ -934,8 +946,6 @@ class ExLlamaV2:
 
         # assert cache is None or isinstance(cache, list) or batch_size <= cache.batch_size
 
-        x = input_ids
-
         if not attn_params:
             attn_params = ExLlamaV2Attention.Params(batch_size, seq_len, past_len, input_mask, position_offsets)
         else:
@@ -944,48 +954,99 @@ class ExLlamaV2:
                 cache.current_seq_len = past_len
 
         device = self.modules[0].device_idx
+        #print(f"embedding device {device}")
         if device is not None and device >= 0:
             context = self.get_device_context(device)
             if context:
                 torch.cuda.set_stream(context.stream)
 
-        for idx, module in enumerate(self.modules):
+        past_len_tensor = kwargs.pop("past_len_tensor") if "past_len_tensor" in kwargs else torch.tensor([past_len] * batch_size, dtype = torch.int, pin_memory = True)
 
-            if idx == self.head_layer_idx and last_id_only:
-                x = x.narrow(-2, -1, 1)
+        if not is_capturing:
+            #print(f"input_ids {input_ids}")
+            x = self.modules[0].forward(input_ids, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
+        else:
+            x = hidden_states
 
-            if idx in extract_state_indices:
-                r["states"][idx] = x.clone()
-                if idx == self.head_layer_idx - 1:
-                    r["last_state"] = r["states"][idx]
+        if use_cuda_graph and seq_len == 1 and self.decode_cnt > 0:
+            #print("using cuda graph")
+            if self.cuda_graph_runner is None:
+                self.cuda_graph_runner = CUDAGraphRunner()
+                self.cuda_graph_runner.capture(self,
+                                        hidden_states = x,
+                                        past_len = past_len,
+                                        batch_size = batch_size,
+                                        cache = cache,
+                                        input_mask = input_mask,
+                                        position_offsets = position_offsets,
+                                        preprocess_only = preprocess_only,
+                                        last_id_only = last_id_only,
+                                        loras = loras,
+                                        return_last_state = return_last_state,
+                                        abort_event = abort_event,
+                                        attn_params = attn_params,
+                                        extract_state_indices = extract_state_indices,
+                                        main_device = "cuda:0",
+                                        **kwargs)
+            x = self.cuda_graph_runner(hidden_states = x,
+                                        past_len = past_len,
+                                        input_mask = input_mask,
+                                        position_offsets = position_offsets,)
 
-            # Respect abort signal
+        else:
+            
+            if seq_len == 1 and self.decode_cnt > 0:
+                self.modules = self.modules#[:21]
+            for idx, module in enumerate(self.modules[1:]):
 
-            if abort_event and abort_event.is_set():
-                return None, None
+                if idx == self.head_layer_idx and last_id_only:
+                    x = x.narrow(-2, -1, 1)
 
-            # Onward
+                if idx in extract_state_indices:
+                    r["states"][idx] = x.clone()
+                    if idx == self.head_layer_idx - 1:
+                        r["last_state"] = r["states"][idx]
 
-            n_device = module.device_idx
-            if n_device is not None and n_device != device and n_device >= 0:
-                x = safe_move_tensor(x, n_device, non_blocking = True)
-                device = n_device
-                context = self.get_device_context(device)
-                torch.cuda.set_stream(context.stream)
+                # Respect abort signal
 
-            x = module.forward(x, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
+                if abort_event and abort_event.is_set():
+                    return None, None
 
-            if preprocess_only and idx == self.last_kv_layer_idx:
-                x = None
-                break
+                # Onward
+
+                #torch.cuda.synchronize("cuda:0")
+                #torch.cuda.synchronize("cuda:1")
+                #print(x)
+
+                n_device = module.device_idx
+                if n_device is not None and n_device != device and n_device >= 0:
+                    x = safe_move_tensor(x, n_device, non_blocking = True)
+                    device = n_device
+                    context = self.get_device_context(device)
+                    torch.cuda.set_stream(context.stream)
+
+                #torch.cuda.synchronize("cuda:0")
+                #torch.cuda.synchronize("cuda:1")
+
+                #print(x)
+
+                x = module.forward(x, past_len_tensor = past_len_tensor, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
+
+                if preprocess_only and idx == self.last_kv_layer_idx:
+                    x = None
+                    break
+
+        if is_capturing:
+            return x
+        
+        #torch.cuda.synchronize("cuda:0")
+        #torch.cuda.synchronize("cuda:1")
+        #print("hidden", x)
 
         # Advance cache
-
         if cache is not None:
             cache.current_seq_len += seq_len
-
         # Final sync if gathering logits
-
         if self.tp_context:
             self.tp_context.wait_streams()
 
@@ -1003,10 +1064,17 @@ class ExLlamaV2:
 
         # Set padding logits to -inf
 
+        r={}
+
         if x is not None:
             head_padding = self.modules[-1].padding
             if head_padding > 0:
                 x[:, :, -head_padding:] = -65504.
             r["logits"] = x
 
+        torch.cuda.synchronize("cuda:0")
+        torch.cuda.synchronize("cuda:1")
+        #print("logit", x)
+        #if x is not None:
+        #    x.resize_(1,-1)
         return r

@@ -41,12 +41,16 @@ void gemm_half_q_half_cuda_part
         AT_Result* atr;
         cudaEvent_t start, stop;
 
-        if (!AT_USE_GEMM_AUTOTUNE)
+        if (true||!AT_USE_GEMM_AUTOTUNE)
         {
             block_kn_size = at_get_fallback_blocksize(b->device, size_m, size_n, size_k);
         }
         else
         {
+            // don't measure time when capturing
+            cudaStreamCaptureStatus is_capturing{ cudaStreamCaptureStatusNone };
+            cudaStreamIsCapturing(c10::cuda::getCurrentCUDAStream(), &is_capturing);
+
             // Only autotune up to EXL2_BLOCK_M_SIZE_MAX
 
             if (size_m > EXL2_BLOCK_M_SIZE_MAX)
@@ -72,7 +76,18 @@ void gemm_half_q_half_cuda_part
                     measure = true;
                     int c32 = atr->timings_32.size();
                     int c64 = atr->timings_64.size();
-                    if (c32 + c64 == AT_NUM_MEASURE)
+                    if (is_capturing == cudaStreamCaptureStatus::cudaStreamCaptureStatusActive)
+                    {
+                        if (c32 >= AT_NUM_WARMUP && c64 >= AT_NUM_WARMUP)
+                        {
+                            at_select(atr, b->device, size_m, size_k, size_n);
+                            block_kn_size = atr->best;
+                        }
+                        else
+                            block_kn_size = at_get_fallback_blocksize(b->device, size_m, size_n, size_k);
+                        measure = false;
+                    }
+                    else if (c32 + c64 == AT_NUM_MEASURE)
                     {
                         at_select(atr, b->device, size_m, size_k, size_n);
                         block_kn_size = atr->best;
@@ -113,7 +128,6 @@ void gemm_half_q_half_cuda_part
         }
 
         // Launch kernel
-
         kernel<<<gridDim, blockDim, 0, stream>>>
         (
             a,
@@ -137,6 +151,7 @@ void gemm_half_q_half_cuda_part
             r_weights,
             r_weights_stride
         );
+        
         if (graph) graph->attach_label(stream, label, KernelSublabels::GEMM_EXL2);
 
         // Finish measurement
@@ -231,7 +246,6 @@ void gemm_half_q_half_cuda
     // TODO: Finish the chunking stuff
 
     int row_step = (b->max_dq_rows / 128) * 128;
-
     if (size_m > MAX_Q_GEMM_ROWS && !force_cuda && size_k <= row_step)
     {
         if (graph) printf(" ## Labeling graph in reconstruct/cuBLAS matmul");

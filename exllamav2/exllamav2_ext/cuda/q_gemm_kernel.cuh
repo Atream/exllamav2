@@ -562,5 +562,13 @@ __global__ void gemm_half_q_half_kernel
 //        *out = result01;
 //        *(out + 1) = result23;
     }
+
+    /*if (threadIdx.x == 0 && blockIdx.x == 0 && threadIdx.y == 0 && blockIdx.y == 0 && threadIdx.z == 0 && blockIdx.z == 0)
+    {
+        printf("in kernel: c\n");
+        for (int i = 0; i < 10; i++)
+            printf("%f ", __half2float(((half*)c)[i]));
+        printf("\n");
+    }*/
 }
 

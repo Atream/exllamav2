@@ -110,13 +110,13 @@ class Params:
                 attn_masks.append(self.build_single_attn_mask(1, self.seq_len, past_len, device, self.input_mask[i]))
         return attn_masks
 
-    def prep_tp(self, model):
+    def prep_tp(self, model, past_len_tensor):
         if self.position_offsets_tp is not None:
             return
         split = model.tp_context.get_split(BROADCAST_KV)
         self.position_offsets_tp = []
         self.past_len_tp = []
-        pl = torch.tensor([self.past_len] * self.batch_size, dtype = torch.int)
+        
         for dev, a, b in split:
             context = model.get_device_context(dev)
             torch.cuda.set_stream(context.stream)
@@ -127,7 +127,7 @@ class Params:
             if self.past_len is None:
                 self.past_len_tp.append(None)
             else:
-                self.past_len_tp.append(safe_move_tensor(pl, dev, non_blocking = True))
+                self.past_len_tp.append(safe_move_tensor(past_len_tensor, dev, non_blocking = True))
 
 
 class PagedParams(Params):

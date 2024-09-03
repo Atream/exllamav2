@@ -948,6 +948,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
     # @profile
     def forward(self,
                 hidden_states: torch.Tensor,
+                past_len_tensor: torch.Tensor,
                 cache: ExLlamaV2CacheBase | None = None,
                 attn_params: ExLlamaV2Attention.Params | None = None,
                 past_len: int | None = None,
@@ -971,6 +972,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
             if cache is not None:
                 return self.forward_tp(
                     hidden_states,
+                    past_len_tensor,
                     cache,
                     attn_params,
                     past_len,
@@ -983,6 +985,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
                 #   tensor, and flash-attn currently has a bug that prevents that from working when q_len == 1
                 return self.forward_tp_old(
                     hidden_states,
+                    past_len_tensor,
                     cache,
                     attn_params,
                     past_len,
@@ -1114,6 +1117,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
     def forward_tp(
         self,
         hidden_states: torch.Tensor,
+        past_len_tensor: torch.Tensor,
         cache: ExLlamaV2CacheBase | None = None,
         attn_params: ExLlamaV2Attention.Params | None = None,
         past_len: int | None = None,
@@ -1130,7 +1134,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
         assert not self.sliding_window, \
             "Sliding window not supported in TP mode"
 
-        attn_params.prep_tp(self.model)
+        attn_params.prep_tp(self.model, past_len_tensor)
 
         batch_size, q_len, _ = hidden_states.shape
         hidden_states = hidden_states.view(-1, cfg.hidden_size)
@@ -1177,6 +1181,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
     def forward_tp_old(
         self,
         hidden_states: torch.Tensor,
+        past_len_tensor: torch.Tensor,
         cache: ExLlamaV2CacheBase | None = None,
         attn_params: ExLlamaV2Attention.Params | None = None,
         past_len: int | None = None,
@@ -1187,7 +1192,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
         cfg = self.model.config
         split = self.model.tp_context.get_split(BROADCAST_KV)
         batch_size, q_len, _ = hidden_states.shape
-        attn_params.prep_tp(self.model)
+        attn_params.prep_tp(self.model, past_len_tensor)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         past_len = 0 if cache is None else cache.current_seq_len
 
