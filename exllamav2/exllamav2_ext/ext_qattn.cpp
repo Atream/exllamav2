@@ -643,6 +643,7 @@ void tp_attn_forward_
                 #endif
 
                 auto none = py::none();
+
                 fwd_kvcache_func
                 (
                     q,
@@ -706,6 +707,7 @@ void tp_attn_forward_
         // Gather
 
         tp_gather_barrier(tp_context, 0, temp_o, BROADCAST_Q, temp_o, -1, head_dim, t_device, sync);
+    
     };
 
     #ifdef TP_MULTITHREADED

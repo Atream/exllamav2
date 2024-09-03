@@ -41,7 +41,7 @@ void gemm_half_q_half_cuda_part
         AT_Result* atr;
         cudaEvent_t start, stop;
 
-        if (true||!AT_USE_GEMM_AUTOTUNE)
+        if (!AT_USE_GEMM_AUTOTUNE)
         {
             block_kn_size = at_get_fallback_blocksize(b->device, size_m, size_n, size_k);
         }
@@ -128,6 +128,7 @@ void gemm_half_q_half_cuda_part
         }
 
         // Launch kernel
+
         kernel<<<gridDim, blockDim, 0, stream>>>
         (
             a,
@@ -151,7 +152,6 @@ void gemm_half_q_half_cuda_part
             r_weights,
             r_weights_stride
         );
-        
         if (graph) graph->attach_label(stream, label, KernelSublabels::GEMM_EXL2);
 
         // Finish measurement
@@ -246,6 +246,7 @@ void gemm_half_q_half_cuda
     // TODO: Finish the chunking stuff
 
     int row_step = (b->max_dq_rows / 128) * 128;
+
     if (size_m > MAX_Q_GEMM_ROWS && !force_cuda && size_k <= row_step)
     {
         if (graph) printf(" ## Labeling graph in reconstruct/cuBLAS matmul");

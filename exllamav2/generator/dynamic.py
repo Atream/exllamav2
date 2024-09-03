@@ -497,9 +497,8 @@ class ExLlamaV2DynamicGenerator:
         """
         Warm up the generator by generating some text, making sure kernel autotune has time to complete.
         """
-        pass
-        #self.generate("Once upon a time,", max_new_tokens = 200)
-        #self.reset_page_table()
+        self.generate("Once upon a time,", max_new_tokens = 200)
+        self.reset_page_table()
 
 
     def set_loras(self, loras: list[ExLlamaV2Lora] | None):
@@ -1132,7 +1131,6 @@ class ExLlamaV2DynamicGenerator:
 
         # Pass logits to jobs for sampling
 
-        #print("end forward_chunk")
         batch_logits = self.logits_pinned[:device_logits.shape[0], :device_logits.shape[1], :]
         batch_logits.copy_(device_logits, non_blocking = False)
         # device_logits = device_logits.float().cpu()

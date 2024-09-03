@@ -45,13 +45,6 @@ __global__ void rms_norm_kernel
     const bool output_fp32
 )
 {
-    /*if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        printf("in kernel: x\n");
-        for (int i = 0; i < 10; i++)
-            printf("%f ", __half2float(((half*)x)[i]));
-        printf("\n");
-    }*/
     int warp_id = threadIdx.x / WARP_SIZE;
     int lane_id = threadIdx.x % WARP_SIZE;
     int row = blockIdx.x;
@@ -120,12 +113,6 @@ __global__ void rms_norm_kernel
     #endif
     for(int offset = warpSize / 2; offset > 0; offset /= 2) sum += __shfl_xor_sync(0xffffffff, sum, offset);
 
-    //if (threadIdx.x == 0 && blockIdx.x == 0)
-    //{
-    //    printf("in kernel: sum: %f\n", sum);
-    //    //printf("output_fp32: %d\n", output_fp32);
-    //}
-
     // Get norm
 
     float rmf = rsqrtf(sum * r_dim + epsilon);
@@ -184,16 +171,7 @@ __global__ void rms_norm_kernel
                 y_row[column] = make_float2(n0, n1);
             }
         }
-    }
-
-    /*if (threadIdx.x == 0 && blockIdx.x == 0)
-    {
-        printf("in kernel: y\n");
-        for(int i=0;i<10;i++)
-            printf("%f ", __half2float(((half*)y)[i]) );
-        printf("\n");
-    }*/
-        
+    }  
 }
 
 #define kernel_instance(bpw) \
