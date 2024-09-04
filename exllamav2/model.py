@@ -909,7 +909,7 @@ class ExLlamaV2:
                       abort_event: threading.Event | None = None,
                       attn_params: ExLlamaV2Attention.Params | None = None,
                       extract_state_indices: list[int] | None = None,
-                      use_cuda_graph = False,
+                      use_cuda_graph = True,
                       is_capturing = False,
                       **kwargs) \
         -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
